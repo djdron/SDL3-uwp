@@ -162,6 +162,8 @@ static void WINRT_ProcessWindowSizeChange() // TODO: Pass an SDL_Window-identify
 
 SDL_WinRTApp::SDL_WinRTApp() : m_windowClosed(false),
                                m_windowVisible(true),
+                               m_activated(false),
+                               m_commandLine(nullptr),
                                m_launchOnExit("")
 {
 }
@@ -333,6 +335,47 @@ void SDL_WinRTApp::Load(Platform::String ^ entryPoint)
 {
 }
 
+/* argv for main(): "WinRTApp", then the words of commandLine (may be NULL),
+   split at spaces; double quotes group words with spaces in them.
+ */
+static char **WINRT_SplitCommandLine(const char *commandLine, int *argc)
+{
+    const size_t length = commandLine ? SDL_strlen(commandLine) : 0;
+    // at most one word for every two characters, plus argv[0] and the NULL
+    char **argv = (char **)SDL_calloc(length / 2 + 3, sizeof(*argv));
+    char *word = (char *)SDL_malloc(length + 1);
+    if (!argv || !word) {
+        SDL_free(argv);
+        SDL_free(word);
+        return NULL;
+    }
+    int count = 0;
+    argv[count++] = SDL_strdup("WinRTApp");
+    size_t used = 0;
+    bool inWord = false, quoted = false;
+    for (size_t i = 0; i <= length; ++i) {
+        const char c = (i < length) ? commandLine[i] : '\0';
+        if (c == '"') {
+            quoted = !quoted;
+            inWord = true;
+        } else if (c == '\0' || ((c == ' ' || c == '\t') && !quoted)) {
+            if (inWord) {
+                word[used] = '\0';
+                argv[count++] = SDL_strdup(word);
+                used = 0;
+                inWord = false;
+            }
+        } else {
+            word[used++] = c;
+            inWord = true;
+        }
+    }
+    SDL_free(word);
+    argv[count] = NULL;
+    *argc = count;
+    return argv;
+}
+
 void SDL_WinRTApp::App_BackRequested(
     Platform::Object ^ sender,
     Windows::UI::Core::BackRequestedEventArgs ^ e)
@@ -351,18 +394,32 @@ void SDL_WinRTApp::Run()
 
     SDL_SetMainReady();
 
+    /* The app's activation, which carries its arguments, comes in through
+       the window's events: let them in until it has come (up to 2 seconds).
+     */
+    CoreWindow ^ coreWindow = CoreWindow::GetForCurrentThread();
+    for (int i = 0; i < 200 && !m_activated && coreWindow; ++i) {
+        coreWindow->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+        if (!m_activated) {
+            SDL_DelayNS(SDL_MS_TO_NS(10));
+        }
+    }
+
     if (WINRT_SDLAppEntryPoint) {
-        // TODO, WinRT: pass the C-style main() a reasonably realistic
-        // representation of command line arguments.
-        int argc = 1;
-        char **argv = (char **)SDL_malloc(2 * sizeof(*argv));
+        char *commandLine = NULL;
+        if (m_commandLine && !m_commandLine->IsEmpty()) {
+            commandLine = WIN_StringToUTF8W(m_commandLine->Data());
+        }
+        int argc = 0;
+        char **argv = WINRT_SplitCommandLine(commandLine, &argc);
+        SDL_free(commandLine);
         if (!argv) {
             return;
         }
-        argv[0] = SDL_strdup("WinRTApp");
-        argv[1] = NULL;
         WINRT_SDLAppEntryPoint(argc, argv);
-        SDL_free(argv[0]);
+        for (int i = 0; i < argc; ++i) {
+            SDL_free(argv[i]);
+        }
         SDL_free(argv);
     }
 
@@ -614,18 +671,43 @@ void SDL_WinRTApp::OnAppActivated(CoreApplicationView ^ applicationView, IActiva
 {
     CoreWindow::GetForCurrentThread()->Activate();
 
-    if (args->Kind ==
+    // (when activated again while running, the arguments come too late for main())
+    m_activated = true;
+
+    if (args->Kind == ActivationKind::Launch) {
+        // e.g. the "Command Line Arguments" of Visual Studio's debugging settings
+        m_commandLine = ((LaunchActivatedEventArgs ^)args)->Arguments;
+    } else if (args->Kind ==
         Windows::ApplicationModel::Activation::ActivationKind::Protocol) {
 
         auto protocolActivatedEventArgs = (Windows::ApplicationModel::Activation::
             ProtocolActivatedEventArgs^)(args);
-        auto query = protocolActivatedEventArgs->Uri->QueryParsed;
+        Uri ^uri = protocolActivatedEventArgs->Uri;
+
+        /* The command line, unless a "cmd" parameter gives it: what follows
+           the scheme, decoded, without any query: "myapp:-a -b" or
+           "myapp://-a%20-b" give "-a -b".
+         */
+        std::wstring rest(uri->AbsoluteUri->Data());
+        const size_t colon = rest.find(L':');
+        rest = (colon == std::wstring::npos) ? std::wstring() : rest.substr(colon + 1);
+        if (!uri->Query->IsEmpty()) {
+            rest = rest.substr(0, rest.find(L'?'));
+        }
+        const size_t first = rest.find_first_not_of(L'/');
+        rest = (first == std::wstring::npos) ? std::wstring() : rest.substr(first);
+        const size_t last = rest.find_last_not_of(L'/');
+        rest = (last == std::wstring::npos) ? std::wstring() : rest.substr(0, last + 1);
+        m_commandLine = Uri::UnescapeComponent(ref new Platform::String(rest.c_str()));
+
+        auto query = uri->QueryParsed;
 
         for (uint32_t i = 0; i < query->Size; i++) {
             auto arg = query->GetAt(i);
 
             // parse command line string
             if (arg->Name == L"cmd") {
+                m_commandLine = arg->Value;
                 std::wstring argVal(arg->Value->Begin(), arg->Value->End());
                 // Strip the executable from the cmd argument
                 //if (argVal.rfind(L".exe", 0) == 0) {

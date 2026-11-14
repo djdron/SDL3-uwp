@@ -91,6 +91,8 @@ ref class SDL_WinRTApp sealed : public Windows::ApplicationModel::Core::IFramewo
   private:
     bool m_windowClosed;
     bool m_windowVisible;
+    bool m_activated;
+    Platform::String^ m_commandLine;
     Platform::String^ m_launchOnExit;
 };
 
