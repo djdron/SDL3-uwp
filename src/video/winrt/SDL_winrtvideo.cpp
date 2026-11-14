@@ -463,6 +463,73 @@ static void SDLCALL WINRT_SetDisplayOrientationsPreference(void *userdata, const
     WINRT_DISPLAY_PROPERTY(AutoRotationPreferences) = (DisplayOrientations)orientationFlags;
 }
 
+#if defined(SDL_WINRT_HAVE_HDMI_DISPLAY_INFORMATION)
+/* On the Xbox, the TV's modes come from HdmiDisplayInformation, not DXGI:
+   the desktop mode gets the TV's refresh rate, and there is a fullscreen
+   mode for each rate the TV takes at its current resolution (only the rate
+   changes; the swap chain keeps its size). SDL_SetWindowFullscreenMode()
+   with one of them switches the TV, e.g. to 50 Hz, and leaving fullscreen
+   or quitting sets the console's own mode back. Elsewhere there is no HDMI
+   information, and the DXGI modes stay.
+ */
+static Windows::Graphics::Display::Core::HdmiDisplayInformation ^ WINRT_GetHdmiDisplayInformation(void)
+{
+    try {
+        return Windows::Graphics::Display::Core::HdmiDisplayInformation::GetForCurrentView();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+static void WINRT_SetModeRefreshRate(SDL_DisplayMode *mode, double rate)
+{
+    mode->refresh_rate = 0.0f;
+    mode->refresh_rate_numerator = (int)SDL_lround(rate * 1000.0);
+    mode->refresh_rate_denominator = 1000;
+}
+
+static void WINRT_InitHdmiDisplayModes(SDL_VideoDevice *_this)
+{
+    using namespace Windows::Graphics::Display::Core;
+
+    if (_this->num_displays <= 0) {
+        return;
+    }
+    HdmiDisplayInformation ^ hdi = WINRT_GetHdmiDisplayInformation();
+    if (!hdi) {
+        return;
+    }
+    try {
+        HdmiDisplayMode ^ current = hdi->GetCurrentDisplayMode();
+        if (!current) {
+            return;
+        }
+        SDL_VideoDisplay *display = _this->displays[0];
+        SDL_DisplayMode desktop = display->desktop_mode;
+        desktop.internal = NULL;
+        WINRT_SetModeRefreshRate(&desktop, current->RefreshRate);
+        SDL_SetDesktopDisplayMode(display, &desktop);
+        SDL_SetCurrentDisplayMode(display, &display->desktop_mode);
+
+        SDL_ResetFullscreenDisplayModes(display);
+        auto modes = hdi->GetSupportedDisplayModes();
+        for (unsigned int i = 0; i < modes->Size; ++i) {
+            HdmiDisplayMode ^ m = modes->GetAt(i);
+            if (m->StereoEnabled ||
+                m->ResolutionWidthInRawPixels != current->ResolutionWidthInRawPixels ||
+                m->ResolutionHeightInRawPixels != current->ResolutionHeightInRawPixels) {
+                continue;
+            }
+            SDL_DisplayMode mode = display->desktop_mode;
+            mode.internal = NULL;
+            WINRT_SetModeRefreshRate(&mode, m->RefreshRate);
+            SDL_AddFullscreenDisplayMode(display, &mode); // one per rate: equal modes are skipped
+        }
+    } catch (...) {
+    }
+}
+#endif // SDL_WINRT_HAVE_HDMI_DISPLAY_INFORMATION
+
 bool WINRT_VideoInit(SDL_VideoDevice *_this)
 {
     SDL_VideoData *internal = _this->internal;
@@ -474,6 +541,9 @@ bool WINRT_VideoInit(SDL_VideoDevice *_this)
     }
 
     WINRT_ApplyOutputSizeToPrimaryDisplay(_this);
+#if defined(SDL_WINRT_HAVE_HDMI_DISPLAY_INFORMATION)
+    WINRT_InitHdmiDisplayModes(_this);
+#endif
 
     // Register the hint, SDL_HINT_ORIENTATIONS, with SDL.
     // TODO, WinRT: see if an app's default orientation can be found out via WinRT API(s), then set the initial value of SDL_HINT_ORIENTATIONS accordingly.
@@ -734,6 +804,55 @@ bool WINRT_InitModes(SDL_VideoDevice *_this)
 
 static bool WINRT_SetDisplayMode(SDL_VideoDevice *_this, SDL_VideoDisplay *display, SDL_DisplayMode *mode)
 {
+#if defined(SDL_WINRT_HAVE_HDMI_DISPLAY_INFORMATION)
+    using namespace Windows::Graphics::Display::Core;
+
+    HdmiDisplayInformation ^ hdi = WINRT_GetHdmiDisplayInformation();
+    if (!hdi || _this->num_displays <= 0 || display != _this->displays[0]) {
+        return true;
+    }
+    try {
+        if (mode == &display->desktop_mode) {
+            hdi->SetDefaultDisplayModeAsync();
+            return true;
+        }
+        HdmiDisplayMode ^ current = hdi->GetCurrentDisplayMode();
+        if (!current) {
+            return SDL_SetError("WinRT: the TV's current mode is unknown");
+        }
+        // the TV's mode at the current resolution with this rate; best also
+        // with the current colour space and depth
+        HdmiDisplayMode ^ best = nullptr;
+        int bestScore = -1;
+        auto modes = hdi->GetSupportedDisplayModes();
+        for (unsigned int i = 0; i < modes->Size; ++i) {
+            HdmiDisplayMode ^ m = modes->GetAt(i);
+            if (m->StereoEnabled ||
+                m->ResolutionWidthInRawPixels != current->ResolutionWidthInRawPixels ||
+                m->ResolutionHeightInRawPixels != current->ResolutionHeightInRawPixels ||
+                SDL_fabs(m->RefreshRate - mode->refresh_rate) > 0.01) {
+                continue;
+            }
+            int score = 0;
+            if (m->ColorSpace == current->ColorSpace) {
+                score += 2;
+            }
+            if (m->BitsPerPixel == current->BitsPerPixel) {
+                score += 1;
+            }
+            if (score > bestScore) {
+                best = m;
+                bestScore = score;
+            }
+        }
+        if (!best) {
+            return SDL_SetError("WinRT: the TV has no mode at %.2f Hz", mode->refresh_rate);
+        }
+        hdi->RequestSetCurrentDisplayModeAsync(best); // the TV switches a moment later
+    } catch (...) {
+        return SDL_SetError("WinRT: setting the TV's mode failed");
+    }
+#endif
     return true;
 }
 
