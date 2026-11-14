@@ -297,22 +297,13 @@ static void WINRT_GetWindowSizeInPixels(SDL_VideoDevice *_this, SDL_Window *wind
         }
         return;
     }
-    int filter_w, filter_h;
-    if (!w) {
-        w = &filter_w;
+    /* window->w and window->h are in DIPs (CoreWindow's Bounds); the display
+       modes don't carry the display's scale, so take it from LogicalDpi. */
+    if (w) {
+        *w = WINRT_DIPS_TO_PHYSICAL_PIXELS(window->w);
     }
-    if (!h) {
-        h = &filter_h;
-    }
-    *w = window->w;
-    *h = window->h;
-    SDL_VideoDisplay *display = SDL_GetVideoDisplayForWindow(window);
-    const SDL_DisplayMode *mode = ((window->flags & SDL_WINDOW_FULLSCREEN) && SDL_GetWindowFullscreenMode(window))
-                                      ? SDL_GetCurrentDisplayMode(display->id)
-                                      : SDL_GetDesktopDisplayMode(display->id);
-    if (mode) {
-        *w = (int)SDL_ceilf(*w * mode->pixel_density);
-        *h = (int)SDL_ceilf(*h * mode->pixel_density);
+    if (h) {
+        *h = WINRT_DIPS_TO_PHYSICAL_PIXELS(window->h);
     }
 }
 
