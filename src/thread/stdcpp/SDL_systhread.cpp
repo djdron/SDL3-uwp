@@ -34,9 +34,23 @@ extern "C" {
 #include <Windows.h>
 #endif
 
+static SDL_ThreadID ThreadIDOf(const std::thread::id &cpp_thread_id)
+{
+    static_assert(sizeof(std::thread::id) <= sizeof(SDL_ThreadID), "std::thread::id must not be bigger than SDL_ThreadID");
+    SDL_ThreadID thread_id{};
+    SDL_memcpy(&thread_id, &cpp_thread_id, sizeof(std::thread::id));
+    return thread_id;
+}
+
 static void RunThread(void *args)
 {
-    SDL_RunThread((SDL_Thread *)args);
+    SDL_Thread *thread = (SDL_Thread *)args;
+    /* SDL_GetThreadID() of this thread, from its start (the creator sets it
+       too, once std::thread is made). WASAPI's management thread compares it
+       with SDL_GetCurrentThreadID() to run its own tasks directly; left 0,
+       it waited for itself when opening an audio device. */
+    thread->threadid = ThreadIDOf(std::this_thread::get_id());
+    SDL_RunThread(thread);
 }
 
 extern "C"
@@ -46,7 +60,9 @@ bool SDL_SYS_CreateThread(SDL_Thread *thread,
 {
     try {
         // !!! FIXME: no way to set a thread stack size here.
-        thread->handle = (void *)new std::thread(RunThread, thread);
+        std::thread *cpp_thread = new std::thread(RunThread, thread);
+        thread->threadid = ThreadIDOf(cpp_thread->get_id());
+        thread->handle = (void *)cpp_thread;
         return true;
     } catch (std::system_error &ex) {
         return SDL_SetError("unable to start a C++ thread: code=%d; %s", ex.code().value(), ex.what());
@@ -64,11 +80,7 @@ void SDL_SYS_SetupThread(const char *name)
 extern "C"
 SDL_ThreadID SDL_GetCurrentThreadID(void)
 {
-    static_assert(sizeof(std::thread::id) <= sizeof(SDL_ThreadID), "std::thread::id must not be bigger than SDL_ThreadID");
-    SDL_ThreadID thread_id{};
-    const auto cpp_thread_id = std::this_thread::get_id();
-    SDL_memcpy(&thread_id, &cpp_thread_id, sizeof(std::thread::id));
-    return thread_id;
+    return ThreadIDOf(std::this_thread::get_id());
 }
 
 extern "C"
