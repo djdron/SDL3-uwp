@@ -586,7 +586,12 @@ static bool WGI_JoystickInit(void)
 {
     HRESULT hr;
 
+#ifdef SDL_PLATFORM_WINRT
+    // the only joystick driver on WinRT: on by default
+    if (!SDL_GetHintBoolean(SDL_HINT_JOYSTICK_WGI, true)) {
+#else
     if (!SDL_GetHintBoolean(SDL_HINT_JOYSTICK_WGI, false)) {
+#endif
         return true;
     }
 
