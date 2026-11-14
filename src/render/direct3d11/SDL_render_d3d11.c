@@ -1094,13 +1094,12 @@ static HRESULT D3D11_CreateWindowSizeDependentResources(SDL_Renderer *renderer)
     D3D11_ReleaseMainRenderTargetView(renderer);
 
     /* The width and height of the swap chain must be based on the display's
-     * non-rotated size.
+     * non-rotated size: in pixels, as SDL_GetRenderOutputSize() gives it
+     * (on WinRT too, where the window's size is in DIPs: with display
+     * scaling above 100%, a swap chain of that size only took part of what
+     * was drawn).
      */
-#ifdef SDL_PLATFORM_WINRT
-    SDL_GetWindowSize(renderer->window, &w, &h);
-#else
     SDL_GetWindowSizeInPixels(renderer->window, &w, &h);
-#endif
     data->rotation = D3D11_GetCurrentRotation();
     // SDL_Log("%s: windowSize={%d,%d}, orientation=%d", SDL_FUNCTION, w, h, (int)data->rotation);
     if (D3D11_IsDisplayRotated90Degrees(data->rotation)) {
