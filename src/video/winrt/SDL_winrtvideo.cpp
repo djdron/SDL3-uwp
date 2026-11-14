@@ -90,6 +90,7 @@ static void WINRT_VideoQuit(SDL_VideoDevice *_this);
 
 // Window functions
 static bool WINRT_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID create_props);
+static void WINRT_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window);
 static void WINRT_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window);
 static SDL_FullscreenResult WINRT_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window *window, SDL_VideoDisplay *display, SDL_FullscreenOp fullscreen);
 static void WINRT_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window);
@@ -352,6 +353,7 @@ static SDL_VideoDevice *WINRT_CreateDevice(void)
     device->VideoInit = WINRT_VideoInit;
     device->VideoQuit = WINRT_VideoQuit;
     device->CreateSDLWindow = WINRT_CreateWindow;
+    device->SetWindowTitle = WINRT_SetWindowTitle;
     device->SetWindowSize = WINRT_SetWindowSize;
     device->SetWindowFullscreen = WINRT_SetWindowFullscreen;
     device->DestroyWindow = WINRT_DestroyWindow;
@@ -1039,6 +1041,25 @@ bool WINRT_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Properti
 
     // All done!
     return true;
+}
+
+void WINRT_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window)
+{
+#if SDL_WINRT_USE_APPLICATIONVIEW
+    SDL_WindowData *data = window->internal;
+    if (!data || !data->appView) {
+        return;
+    }
+    // Windows shows it in the title bar after the app's name
+    WCHAR *title = WIN_UTF8ToStringW(window->title ? window->title : "");
+    if (title) {
+        try {
+            data->appView->Title = ref new Platform::String(title);
+        } catch (Platform::Exception ^) {
+        }
+        SDL_free(title);
+    }
+#endif
 }
 
 void WINRT_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
