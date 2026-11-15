@@ -356,11 +356,17 @@ void WASAPI_DisconnectDevice(SDL_AudioDevice *device)
     }
 }
 
+#ifndef AUDCLNT_E_RESOURCES_INVALIDATED
+#define AUDCLNT_E_RESOURCES_INVALIDATED AUDCLNT_ERR(0x026)
+#endif
+
 static bool WasapiFailed(SDL_AudioDevice *device, const HRESULT err)
 {
     if (err == S_OK) {
         return false;
-    } else if (err == AUDCLNT_E_DEVICE_INVALIDATED) {
+    } else if (err == AUDCLNT_E_DEVICE_INVALIDATED || err == AUDCLNT_E_RESOURCES_INVALIDATED) {
+        // (the second one: the app was suspended, as a UWP app going to the background; the
+        // device itself is fine, so it is opened again like a lost one)
         device->hidden->device_lost = true;
     } else {
         device->hidden->device_dead = true;
